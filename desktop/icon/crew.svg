@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Valnivo Crew</title>
+  <defs><clipPath id="tile"><rect x="100" y="100" width="824" height="824" rx="186"/></clipPath></defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="#0a0b0d"/>
+  <g clip-path="url(#tile)">
+    <circle cx="282" cy="728" r="156" fill="#d9dadd"/>
+    <circle cx="742" cy="728" r="156" fill="#d9dadd"/>
+    <g fill="#0a0b0d"><circle cx="226" cy="694" r="19"/><circle cx="282" cy="694" r="19"/><circle cx="742" cy="694" r="19"/><circle cx="798" cy="694" r="19"/></g>
+    <path d="M512 450 V350" stroke="#ff6a3d" stroke-width="24" stroke-linecap="round"/>
+    <circle cx="512" cy="330" r="42" fill="#ff8c66"/>
+    <circle cx="512" cy="640" r="192" fill="#ff6a3d" stroke="#0a0b0d" stroke-width="30" paint-order="stroke"/>
+    <g fill="#0a0b0d"><circle cx="462" cy="604" r="26"/><circle cx="562" cy="604" r="26"/></g>
+  </g>
+  <rect x="102" y="102" width="820" height="820" rx="184" fill="none" stroke="#24252b" stroke-width="4"/>
+</svg>
