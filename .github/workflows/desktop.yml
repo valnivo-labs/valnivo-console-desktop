@@ -1,6 +1,6 @@
 # Build Valnivo Crew for macOS (one universal app for Apple silicon and Intel) and Windows (installer).
 # Runs by hand (Actions -> Desktop apps -> Run workflow) or on a tag desktop-v*. Every run keeps the files as artifacts;
-# a tag also publishes them as a GitHub Release of this repository.
+# every run also publishes them as a GitHub Release of this repository (a tag as its version, a run by hand as desktop/package.json's).
 # Not signed yet: macOS is ad-hoc signed, Windows unsigned; both warn on first open until the owner's certificates are added.
 name: Desktop apps
 
@@ -52,12 +52,15 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    # every run publishes (Kabil 15 Nov: "why the desktop apps didn't do the release"): a tag desktop-v* as that version, a run by hand
+    # as desktop-v<version in desktop/package.json> (made or updated). Fixed-name copies make one stable link for the Console:
+    # https://github.com/valnivo-labs/valnivo-crew-desktop/releases/latest/download/Valnivo-Crew-macOS.dmg (and -Windows-Setup.exe)
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -65,8 +68,14 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: |
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then TAG="$GITHUB_REF_NAME"; else TAG="desktop-v$(node -p "require('./desktop/package.json').version")"; fi
+          cp dist/*.dmg dist/Valnivo-Crew-macOS.dmg
+          cp dist/*setup*.exe dist/Valnivo-Crew-Windows-Setup.exe 2>/dev/null || cp dist/*.exe dist/Valnivo-Crew-Windows-Setup.exe
           ls -l dist
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "Valnivo Crew ${TAG#desktop-v}" \
-            --notes "Valnivo Crew ${TAG#desktop-v} for macOS (universal .dmg) and Windows (x64 setup .exe). Not signed yet: see the README for the first-open steps."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest --title "Valnivo Crew ${TAG#desktop-v}" \
+              --notes "Valnivo Crew ${TAG#desktop-v} for macOS (universal .dmg, Apple silicon and Intel) and Windows (x64 setup .exe). Not signed yet: see the README for the first-open steps."
+          fi
