@@ -10,10 +10,20 @@ the computer: no Tauri commands are exposed to it.
 
 ## Getting the apps
 
-Download them from this repository's [Releases](https://github.com/valnivo-labs/valnivo-crew-desktop/releases).
+The apps are built in the **public** repository [valnivo-labs/valnivo-crew-desktop](https://github.com/valnivo-labs/valnivo-crew-desktop),
+where GitHub Actions minutes for macOS and Windows are free (this private repo's Actions billing does not cover them).
+Download them from its [Releases](https://github.com/valnivo-labs/valnivo-crew-desktop/releases).
 
-GitHub Actions builds both: **Actions → Desktop apps → Run workflow** (or push a tag `desktop-v0.9.0`, which also publishes a
-Release). When the run is done, its artifacts are:
+This folder stays the source. `scripts/desktop-publish.sh` copies `desktop/` (and only `desktop/`) there: everything in this
+folder becomes public, so keep it to the app shell, never keys or server code.
+
+```
+scripts/desktop-publish.sh            # sync only
+scripts/desktop-publish.sh --build    # sync and build by hand: the run's artifacts
+scripts/desktop-publish.sh --tag      # sync and tag desktop-v<package.json version>: build and publish a Release
+```
+
+Each run's artifacts are:
 
 - `valnivo-console-macos`: `Valnivo Crew_<version>_universal.dmg` (Apple silicon and Intel, macOS 11 or later)
 - `valnivo-console-windows`: `Valnivo Crew_<version>_x64-setup.exe` (Windows 10 and 11; installs for the current user)
@@ -27,7 +37,7 @@ Until the owner's certificates are added, both systems warn on first open:
 - **Windows** (unsigned): SmartScreen. **More info → Run anyway**.
 
 Signing needs the owner's Apple Developer ID (with notarisation) and a Windows code-signing certificate; both are added as
-repository secrets and the workflow then signs. Nothing else changes.
+secrets of the public build repository and its workflow then signs. Nothing else changes.
 
 ## Building on your own machine
 
