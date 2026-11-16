@@ -1,7 +1,8 @@
 // Card 739: the Valnivo Console as an app for macOS and Windows. One window on https://console.valnivo.eu/ui/ (the same Console
 // as the browser, signed in with the same account), remembered size and place, one copy at a time, and links to anywhere else
 // open in the normal browser. The page gets almost no access to the computer: only Valnivo Crew's own site may show a
-// notification and put the waiting count on the Dock icon (capabilities/default.json); nothing else is exposed.
+// notification, put the waiting count on the Dock icon, and install a signed update (capabilities/default.json).
+// Nothing else is exposed. The private update key is not in this program.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
@@ -32,13 +33,20 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let home: Url = HOME.parse().expect("the Console address");
             let handle = app.handle().clone();
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(home))
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(home))
                 .title("Valnivo Crew")
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(720.0, 520.0)
+                // dark title bar and window background to match the dark Console (#0a0b0d)
+                .theme(Some(tauri::Theme::Dark))
+                .background_color(tauri::window::Color(10, 11, 13, 255))
+                // on Windows Tauri's own drop handler takes file drops away from the page: let the page get them
+                .disable_drag_drop_handler()
                 .on_navigation(move |url| {
                     if stays_inside(url) {
                         return true;
@@ -49,8 +57,76 @@ fn main() {
                     false
                 })
                 .build()?;
+            // Theme::Dark does not set the caption color. Windows 11 can still paint a light bar.
+            #[cfg(windows)]
+            caption::install(&window);
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("the Valnivo Crew app could not start");
+}
+
+/// The DWM call. The colors and the order of attributes live in the library so they can be tested
+/// without a Windows machine. A failed call is ignored: the window stays open on the theme already set.
+#[cfg(windows)]
+mod caption {
+    use valnivo_console::caption::{attempts, dwm_accepted, ATTR_IMMERSIVE};
+
+    fn set_dwm(hwnd: isize, attr: u32, value: u32) -> bool {
+        #[link(name = "dwmapi")]
+        extern "system" {
+            fn DwmSetWindowAttribute(
+                hwnd: isize,
+                dw_attribute: u32,
+                pv_attribute: *const std::ffi::c_void,
+                cb_attribute: u32,
+            ) -> i32;
+        }
+        let code = unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                attr,
+                &value as *const u32 as *const std::ffi::c_void,
+                std::mem::size_of::<u32>() as u32,
+            )
+        };
+        dwm_accepted(code)
+    }
+
+    fn paint(hwnd: isize) {
+        if hwnd == 0 {
+            return;
+        }
+        let immersive_ok = set_dwm(hwnd, ATTR_IMMERSIVE, 1);
+        for (attr, value) in attempts(immersive_ok) {
+            if attr == ATTR_IMMERSIVE {
+                continue;
+            }
+            let _ = set_dwm(hwnd, attr, value);
+        }
+    }
+
+    /// Paint once, and again when Windows rebuilds the caption (focus, size, scale).
+    pub fn install(window: &tauri::WebviewWindow) {
+        let Ok(hwnd) = window.hwnd() else {
+            return;
+        };
+        paint(hwnd.0 as isize);
+        let watch = window.clone();
+        window.on_window_event(move |event| {
+            // The event list is non_exhaustive, so the last arm has to be a wildcard.
+            let again = match event {
+                tauri::WindowEvent::Focused(_)
+                | tauri::WindowEvent::Resized(_)
+                | tauri::WindowEvent::ScaleFactorChanged { .. } => true,
+                _ => false,
+            };
+            if !again {
+                return;
+            }
+            if let Ok(hwnd) = watch.hwnd() {
+                paint(hwnd.0 as isize);
+            }
+        });
+    }
 }

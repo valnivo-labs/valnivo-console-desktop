@@ -1,7 +1,11 @@
-# Build Valnivo Crew for macOS (one universal app for Apple silicon and Intel) and Windows (installer).
-# Runs by hand (Actions -> Desktop apps -> Run workflow) or on a tag desktop-v*. Every run keeps the files as artifacts;
-# every run also publishes them as a GitHub Release of this repository (a tag as its version, a run by hand as desktop/package.json's).
-# Not signed yet: macOS is ad-hoc signed, Windows unsigned; both warn on first open until the owner's certificates are added.
+# Build Valnivo Crew for macOS (one universal app for Apple silicon and Intel) and Windows (installer),
+# plus the signed updater files (macOS .app.tar.gz, Windows setup exe, and latest.json).
+# Runs by hand (Actions -> Desktop apps -> Run workflow) or on a tag desktop-v*.
+# The updater signing key is a secret of this repository and is optional (Kabil 2026-11-16: "no need for the signing keys for now").
+# With it: signed updater files and latest.json, so the app offers the update in Settings. Without it: the installers are built with
+# the updater files switched off and released without latest.json, so nothing unsigned is ever offered as an update; people install
+# that version by hand from the release page.
+# Apple and Windows certificates are separate. Until those exist, the first open can still show a system warning.
 name: Desktop apps
 
 on:
@@ -21,11 +25,16 @@ jobs:
           - os: macos-latest
             name: macos
             args: --target universal-apple-darwin --bundles app,dmg
-            out: desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            out: |
+              desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+              desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.sig
           - os: windows-latest
             name: windows
             args: --bundles nsis
-            out: desktop/src-tauri/target/release/bundle/nsis/*.exe
+            out: |
+              desktop/src-tauri/target/release/bundle/nsis/*.exe
+              desktop/src-tauri/target/release/bundle/nsis/*.sig
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -44,7 +53,18 @@ jobs:
         with:
           workspaces: desktop/src-tauri
       - run: npm ci
-      - run: npx tauri build ${{ matrix.args }}
+      - name: Build
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            npx tauri build ${{ matrix.args }}
+          else
+            echo "No updater signing key on this repository: building the installers without updater files (manual install only)."
+            npx tauri build ${{ matrix.args }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: valnivo-console-${{ matrix.name }}
@@ -52,15 +72,17 @@ jobs:
           if-no-files-found: error
 
   release:
-    # every run publishes (Kabil 15 Nov: "why the desktop apps didn't do the release"): a tag desktop-v* as that version, a run by hand
-    # as desktop-v<version in desktop/package.json> (made or updated). Fixed-name copies make one stable link for the Console:
-    # https://github.com/valnivo-labs/valnivo-crew-desktop/releases/latest/download/Valnivo-Crew-macOS.dmg (and -Windows-Setup.exe)
+    # every run publishes: a tag desktop-v* as that version, a run by hand as desktop-v<package.json version>.
+    # Fixed-name copies keep one stable link for a manual install. latest.json is what the in-app updater reads.
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -69,13 +91,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then TAG="$GITHUB_REF_NAME"; else TAG="desktop-v$(node -p "require('./desktop/package.json').version")"; fi
+          VER="${TAG#desktop-v}"
+          if ls dist/*.sig >/dev/null 2>&1; then
+            node desktop/ci/write-latest.mjs --dir dist --version "$VER" --tag "$TAG" --notes "Valnivo Crew ${VER} for macOS and Windows." --out dist/latest.json
+            NOTE="The app can install the next version from Settings."
+          else
+            NOTE="This build has no updater signature: the app does not offer it as an update. Install it over the app you have from this page."
+          fi
           cp dist/*.dmg dist/Valnivo-Crew-macOS.dmg
           cp dist/*setup*.exe dist/Valnivo-Crew-Windows-Setup.exe 2>/dev/null || cp dist/*.exe dist/Valnivo-Crew-Windows-Setup.exe
           ls -l dist
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest --title "Valnivo Crew ${TAG#desktop-v}" \
-              --notes "Valnivo Crew ${TAG#desktop-v} for macOS (universal .dmg, Apple silicon and Intel) and Windows (x64 setup .exe). Not signed yet: see the README for the first-open steps."
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest --title "Valnivo Crew ${VER}" \
+              --notes "Valnivo Crew ${VER} for macOS (universal) and Windows (x64). ${NOTE} The app is not signed with an Apple or Windows certificate: the first open can still show a system warning."
           fi
