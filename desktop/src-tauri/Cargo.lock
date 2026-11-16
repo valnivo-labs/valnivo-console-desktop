@@ -4674,6 +4674,7 @@ dependencies = [
 name = "valnivo-console"
 version = "0.10.0"
 dependencies = [
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-notification",
