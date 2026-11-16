@@ -32,6 +32,17 @@ Each run's artifacts are:
 
 The build refuses to run until the public repository has the updater signing key in its Actions secrets (`TAURI_SIGNING_PRIVATE_KEY`, and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` only if that key has a password). The private key is not in this folder. The matching public key is in `src-tauri/tauri.conf.json`. Losing the private key means installed copies cannot take a later update.
 
+## Checking a download
+
+Every released file carries a build provenance attestation (SLSA Build L2): GitHub signs that the file came from this
+repository's `Desktop apps` workflow, at that commit. Check one before installing it:
+
+```
+gh attestation verify "Valnivo-Crew-macOS.dmg" -R valnivo-labs/valnivo-crew-desktop
+```
+
+The workflow lives only in the public repository (`.github/workflows/desktop.yml`); its outside actions are pinned to exact commits.
+
 ## Not signed yet
 
 Until the owner's certificates are added, both systems warn on first open:
