@@ -6,6 +6,9 @@
 # the updater files switched off and released without latest.json, so nothing unsigned is ever offered as an update; people install
 # that version by hand from the release page.
 # Apple and Windows certificates are separate. Until those exist, the first open can still show a system warning.
+# Every released file gets a build provenance attestation (SLSA Build L2), signed by GitHub for this workflow run. Check a download:
+#   gh attestation verify <file> -R valnivo-labs/valnivo-crew-desktop
+# Outside actions are pinned to exact commits (the tag or branch they came from is in the comment).
 name: Desktop apps
 
 on:
@@ -40,16 +43,16 @@ jobs:
       run:
         working-directory: desktop
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: ${{ matrix.name == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: desktop/src-tauri
       - run: npm ci
@@ -65,7 +68,7 @@ jobs:
             echo "No updater signing key on this repository: building the installers without updater files (manual install only)."
             npx tauri build ${{ matrix.args }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: valnivo-console-${{ matrix.name }}
           path: ${{ matrix.out }}
@@ -78,18 +81,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write      # the signing certificate for the attestation
+      attestations: write  # store the attestation on this repository
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
-      - name: Publish the release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Gather the release files
         run: |
           set -euo pipefail
           # the artifacts keep their bundle folders (dmg/, macos/, nsis/): put every file at the top of dist/ first
@@ -106,6 +109,19 @@ jobs:
           cp dist/*.dmg dist/Valnivo-Crew-macOS.dmg
           cp dist/*setup*.exe dist/Valnivo-Crew-Windows-Setup.exe 2>/dev/null || cp dist/*.exe dist/Valnivo-Crew-Windows-Setup.exe
           ls -l dist
+          { echo "TAG=$TAG"; echo "VER=$VER"; echo "NOTE=$NOTE"; } >> "$GITHUB_ENV"
+          # every file the release will carry except the .sig files: its sha256, for the attestation (kept outside dist/)
+          (cd dist && find . -maxdepth 1 -type f ! -name '*.sig' -printf '%f\n' | sort | xargs -d '\n' sha256sum) > subjects.txt
+          cat subjects.txt
+      - name: Attest where the files were built
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: subjects.txt
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else
