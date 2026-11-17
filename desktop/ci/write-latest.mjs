@@ -41,7 +41,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const dir = arg("--dir");
   const version = arg("--version");
   const tag = arg("--tag");
-  const repo = process.argv.includes("--repo") ? arg("--repo") : "valnivo-labs/valnivo-crew-desktop";
+  const repo = process.argv.includes("--repo") ? arg("--repo") : "valnivo-labs/valnivo-console-desktop";
   const notes = process.argv.includes("--notes") ? arg("--notes") : "";
   const pubDate = process.argv.includes("--date") ? arg("--date") : new Date().toISOString();
   const out = arg("--out");

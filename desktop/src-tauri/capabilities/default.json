@@ -1,13 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Nothing for the page beyond this: Valnivo Crew (crew.valnivo.eu, and console.valnivo.eu while it moves) may show a notification, set the Dock badge, read the app version, and check, download and install a signed update, then restart. No other command, no other site.",
+  "description": "Nothing for the page beyond this: Valnivo Console (console.valnivo.eu) may show a notification, set the Dock badge, read the app version, and check, download and install a signed update, then restart. No other command, no other site.",
   "windows": [
     "main"
   ],
   "remote": {
     "urls": [
-      "https://crew.valnivo.eu/*",
       "https://console.valnivo.eu/*"
     ]
   },
