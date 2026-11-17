@@ -1,4 +1,4 @@
-# Build Valnivo Console for macOS (one universal app for Apple silicon and Intel) and Windows (installer),
+# Build Valnivo Crew for macOS (one universal app for Apple silicon and Intel) and Windows (installer),
 # plus the signed updater files (macOS .app.tar.gz, Windows setup exe, and latest.json).
 # Runs by hand (Actions -> Desktop apps -> Run workflow) or on a tag desktop-v*.
 # The updater signing key is a secret of this repository and is optional (Kabil 2026-11-16: "no need for the signing keys for now").
@@ -98,17 +98,17 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then TAG="$GITHUB_REF_NAME"; else TAG="desktop-v$(node -p "require('./desktop/package.json').version")"; fi
           VER="${TAG#desktop-v}"
           if ls dist/*.sig >/dev/null 2>&1; then
-            node desktop/ci/write-latest.mjs --dir dist --version "$VER" --tag "$TAG" --notes "Valnivo Console ${VER} for macOS and Windows." --out dist/latest.json
+            node desktop/ci/write-latest.mjs --dir dist --version "$VER" --tag "$TAG" --notes "Valnivo Crew ${VER} for macOS and Windows." --out dist/latest.json
             NOTE="The app can install the next version from Settings."
           else
             NOTE="This build has no updater signature: the app does not offer it as an update. Install it over the app you have from this page."
           fi
-          cp dist/*.dmg dist/Valnivo-Console-macOS.dmg
-          cp dist/*setup*.exe dist/Valnivo-Console-Windows-Setup.exe 2>/dev/null || cp dist/*.exe dist/Valnivo-Console-Windows-Setup.exe
+          cp dist/*.dmg dist/Valnivo-Crew-macOS.dmg
+          cp dist/*setup*.exe dist/Valnivo-Crew-Windows-Setup.exe 2>/dev/null || cp dist/*.exe dist/Valnivo-Crew-Windows-Setup.exe
           ls -l dist
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest --title "Valnivo Console ${VER}" \
-              --notes "Valnivo Console ${VER} for macOS (universal) and Windows (x64). ${NOTE} The app is not signed with an Apple or Windows certificate: the first open can still show a system warning."
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest --title "Valnivo Crew ${VER}" \
+              --notes "Valnivo Crew ${VER} for macOS (universal) and Windows (x64). ${NOTE} The app is not signed with an Apple or Windows certificate: the first open can still show a system warning."
           fi

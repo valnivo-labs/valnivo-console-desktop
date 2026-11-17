@@ -1,4 +1,4 @@
-# Valnivo Console for macOS and Windows
+# Valnivo Crew for macOS and Windows
 
 The Console as an app: one window on <https://console.valnivo.eu/ui/>, the same Console as in the browser, signed in with the
 same account. It is a [Tauri 2](https://tauri.app) shell (Rust, the system's own web view: WebKit on macOS, WebView2 on Windows),
@@ -17,7 +17,7 @@ answers the chat on `127.0.0.1:47613` (only on this computer, only for the Conso
 separate `desktop-helper` that browser users install. Push the mouse into the **top-left corner** to stop it at once, or press
 **Take back control**.
 
-- **macOS:** the first time, macOS asks to allow *Valnivo Console* under **System Settings → Privacy & Security → Accessibility**.
+- **macOS:** the first time, macOS asks to allow *Valnivo Crew* under **System Settings → Privacy & Security → Accessibility**.
   Until the app is signed with an Apple Developer ID, macOS may ask again after an update (the ad-hoc signature changes).
 - **Windows:** nothing to allow. It cannot click into windows that run as administrator.
 - If the separate helper already runs, the app leaves the port to it.
@@ -49,9 +49,9 @@ separate `desktop-helper` that browser users install. Push the mouse into the **
 
 ## Getting the apps
 
-The apps are built in the **public** repository [valnivo-labs/valnivo-console-desktop](https://github.com/valnivo-labs/valnivo-console-desktop),
+The apps are built in the **public** repository [valnivo-labs/valnivo-crew-desktop](https://github.com/valnivo-labs/valnivo-crew-desktop),
 where GitHub Actions minutes for macOS and Windows are free (this private repo's Actions billing does not cover them).
-Download them from its [Releases](https://github.com/valnivo-labs/valnivo-console-desktop/releases).
+Download them from its [Releases](https://github.com/valnivo-labs/valnivo-crew-desktop/releases).
 
 This folder stays the source. `scripts/desktop-publish.sh` copies `desktop/` there, and `desktop/ci/desktop.yml` into the public repo's workflow. Everything in this
 folder becomes public, so keep it to the app shell, never keys or server code.
@@ -64,8 +64,8 @@ scripts/desktop-publish.sh --tag      # sync and tag desktop-v<package.json vers
 
 Each run's artifacts are:
 
-- `valnivo-console-macos`: `Valnivo Console_<version>_universal.dmg` (Apple silicon and Intel, macOS 11 or later) and `Valnivo Console.app.tar.gz` plus its signature (what the updater installs)
-- `valnivo-console-windows`: `Valnivo Console_<version>_x64-setup.exe` (Windows 10 and 11; installs for the current user) plus its signature
+- `valnivo-console-macos`: `Valnivo Crew_<version>_universal.dmg` (Apple silicon and Intel, macOS 11 or later) and `Valnivo Crew.app.tar.gz` plus its signature (what the updater installs)
+- `valnivo-console-windows`: `Valnivo Crew_<version>_x64-setup.exe` (Windows 10 and 11; installs for the current user) plus its signature
 - `latest.json` on the release, which the app reads
 
 The build refuses to run until the public repository has the updater signing key in its Actions secrets (`TAURI_SIGNING_PRIVATE_KEY`, and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` only if that key has a password). The private key is not in this folder. The matching public key is in `src-tauri/tauri.conf.json`. Losing the private key means installed copies cannot take a later update.
@@ -76,7 +76,7 @@ Every released file carries a build provenance attestation (SLSA Build L2): GitH
 repository's `Desktop apps` workflow, at that commit. Check one before installing it:
 
 ```
-gh attestation verify "Valnivo-Console-macOS.dmg" -R valnivo-labs/valnivo-console-desktop
+gh attestation verify "Valnivo-Crew-macOS.dmg" -R valnivo-labs/valnivo-crew-desktop
 ```
 
 The workflow lives only in the public repository (`.github/workflows/desktop.yml`); its outside actions are pinned to exact commits.
@@ -86,7 +86,7 @@ The workflow lives only in the public repository (`.github/workflows/desktop.yml
 Until the owner's certificates are added, both systems warn on first open:
 
 - **macOS** (ad-hoc signed): "Apple could not verify…". Press **Done**, then **System Settings → Privacy & Security → Open
-  Anyway**. Or, once: `xattr -dr com.apple.quarantine "/Applications/Valnivo Console.app"`.
+  Anyway**. Or, once: `xattr -dr com.apple.quarantine "/Applications/Valnivo Crew.app"`.
 - **Windows** (unsigned): SmartScreen. **More info → Run anyway**.
 
 Signing needs the owner's Apple Developer ID (with notarisation) and a Windows code-signing certificate; both are added as

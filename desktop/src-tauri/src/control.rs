@@ -24,7 +24,7 @@ use tauri::AppHandle;
 use crate::input_guard::{self as ig, Phase};
 
 pub const PORT: u16 = 47613;
-const ORIGINS: &[&str] = &["https://console.valnivo.eu"];   // Kabil 17 Nov: Valnivo Console's own app (port 47613); Valnivo Crew's app answers crew.valnivo.eu on 47614
+const ORIGINS: &[&str] = &["https://crew.valnivo.eu", "https://console.valnivo.eu"];   // Kabil 17 Nov: the crew app moves to crew.valnivo.eu (both while it moves)
 const CORNER: i32 = 4;
 const PAUSE: Duration = Duration::from_secs(60);
 const TEXT_MAX: usize = 500;
