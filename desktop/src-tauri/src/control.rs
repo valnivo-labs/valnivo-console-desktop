@@ -312,51 +312,63 @@ const BANNER: &str = "crew-control";
 const BANNER_W: f64 = 640.0;
 const BANNER_H: f64 = 44.0;
 
+/// Kabil 17 Nov: "the control message on all the screens of the connected PC, not only the one the app is open on": one banner per
+/// connected display (labels crew-control-0, -1, ...), each at the top centre of its own screen.
+fn close_banners(a: &AppHandle) {
+    use tauri::Manager;
+    for (label, w) in a.webview_windows() {
+        if label.starts_with(BANNER) {
+            let _ = w.close();
+        }
+    }
+}
+
 fn banner(app: &AppHandle, st: Option<CtlState>) {
     let a = app.clone();
     let _ = app.run_on_main_thread(move || {
-        use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
-        if let Some(w) = a.get_webview_window(BANNER) {
-            let _ = w.close();
-        }
+        use tauri::{WebviewUrl, WebviewWindowBuilder};
+        close_banners(&a);
         let Some(st) = st else { return };
         let local = if st.at.is_empty() { st.until.get(11..16).map(|t| format!("{t} UTC")).unwrap_or_default() } else { st.at.clone() };
         let enc = |s: &str| s.bytes().map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
         let url = format!("control.html?who={}&until={}", enc(&st.agent), enc(&local));
-        let d = pick_display(&displays(&a), st.sw, st.sh);
-        let Ok(w) = WebviewWindowBuilder::new(&a, BANNER, WebviewUrl::App(url.into()))
-            .title("Valnivo Crew has control")
-            .decorations(false)
-            .always_on_top(true)
-            .visible_on_all_workspaces(true)
-            .skip_taskbar(true)
-            .resizable(false)
-            .focused(false)
-            .shadow(true)
-            .inner_size(BANNER_W, BANNER_H)
-            .build() else { return };
-        if let Some(d) = d {
+        for (i, d) in displays(&a).iter().enumerate() {
+            let Ok(w) = WebviewWindowBuilder::new(&a, format!("{BANNER}-{i}"), WebviewUrl::App(url.clone().into()))
+                .title("Valnivo Crew has control")
+                .decorations(false)
+                .always_on_top(true)
+                .visible_on_all_workspaces(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .focused(false)
+                .shadow(true)
+                .inner_size(BANNER_W, BANNER_H)
+                .build() else { continue };
             // the display's space: points on macOS, physical pixels on Windows (displays())
             let scale = if cfg!(target_os = "macos") { 1.0 } else { w.scale_factor().unwrap_or(1.0) };
-            let x = d.x + (d.w - BANNER_W * scale) / 2.0;
-            let y = d.y + 6.0 * scale;
+            let (x, y) = banner_spot(d, scale);
             if cfg!(target_os = "macos") {
                 let _ = w.set_position(tauri::LogicalPosition::new(x, y));
             } else {
                 let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
             }
+            let _ = w.set_ignore_cursor_events(true);                   // clicks go through to what is under it
         }
-        let _ = w.set_ignore_cursor_events(true);                       // clicks go through to what is under it
-        // it never outlives the grant: 15 s after the end time it closes on its own
+        // it never outlives the grant: 15 s after the end time they close on their own
         if let Some(ms) = ms_until(&st.until) {
             let a3 = a.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(ms + 15_000));
                 let a4 = a3.clone();
-                let _ = a3.run_on_main_thread(move || { if let Some(w) = a4.get_webview_window(BANNER) { let _ = w.close(); } });
+                let _ = a3.run_on_main_thread(move || close_banners(&a4));
             });
         }
     });
+}
+
+/// Where a banner goes on one display: horizontally centred, a little below its top edge (in that display's coordinate space).
+pub fn banner_spot(d: &Display, scale: f64) -> (f64, f64) {
+    (d.x + (d.w - BANNER_W * scale) / 2.0, d.y + 6.0 * scale)
 }
 
 /// Milliseconds from now until an ISO UTC time (YYYY-MM-DDTHH:MM:SS[.mmm]Z), without a date crate; None when it does not parse.
@@ -524,6 +536,14 @@ mod tests {
         assert_eq!(epoch_of("nonsense"), None);
         assert_eq!(state_of(&json!({"on": false})), None);
         assert_eq!(state_of(&json!({"on": true, "agent": "a\u{7}b"})).unwrap().agent, "ab", "control characters are dropped");
+    }
+
+    #[test]
+    fn one_banner_spot_per_screen() {
+        let ds = [Display { x: 0.0, y: 0.0, w: 1512.0, h: 982.0, pw: 3024, ph: 1964, main: true },
+                  Display { x: 1512.0, y: -200.0, w: 2560.0, h: 1440.0, pw: 2560, ph: 1440, main: false }];
+        let spots: Vec<(f64, f64)> = ds.iter().map(|d| banner_spot(d, 1.0)).collect();
+        assert_eq!(spots, vec![(436.0, 6.0), (1512.0 + 960.0, -194.0)], "each screen gets its own, centred at its own top");
     }
 
     #[test]
