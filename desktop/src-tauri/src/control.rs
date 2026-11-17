@@ -277,11 +277,114 @@ fn respond(req: tiny_http::Request, code: u16, body: Value, origin: Option<&str>
 /// Starts the control service in its own thread. Returns false when the port is taken (the separate helper runs).
 pub fn start(app: AppHandle) -> bool {
     let port = std::env::var("VALNIVO_HELPER_PORT").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(PORT);   // tests; the page uses 47613
-    serve(port, move || displays(&app))
+    let a2 = app.clone();
+    serve(port, move || displays(&app), move |st| banner(&a2, st))
 }
 
+/// What the page says about control (POST /state): on, who, until (ISO), the shared screen's capture size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CtlState {
+    pub agent: String,
+    pub until: String,
+    /// the end time as the person's own clock shows it (HH:MM, from the page)
+    pub at: String,
+    pub sw: u32,
+    pub sh: u32,
+}
+
+/// The on-screen warning (Kabil 17 Nov: "the screen is under the crew's control: visible, as a warning"): a red banner window at the
+/// top of the shared screen, above every window, that clicks pass through; it goes when control ends (or 15 s after its end time).
+pub fn state_of(v: &Value) -> Option<CtlState> {
+    if v.get("on") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let clean = |s: &str, n: usize| s.chars().filter(|c| !c.is_control()).take(n).collect::<String>();
+    Some(CtlState {
+        agent: clean(v.get("agent").and_then(Value::as_str).unwrap_or("A crew agent"), 60),
+        until: clean(v.get("until").and_then(Value::as_str).unwrap_or(""), 40),
+        at: clean(v.get("at").and_then(Value::as_str).unwrap_or(""), 8),
+        sw: v.get("sw").and_then(Value::as_u64).unwrap_or(0) as u32,
+        sh: v.get("sh").and_then(Value::as_u64).unwrap_or(0) as u32,
+    })
+}
+
+const BANNER: &str = "crew-control";
+const BANNER_W: f64 = 640.0;
+const BANNER_H: f64 = 44.0;
+
+fn banner(app: &AppHandle, st: Option<CtlState>) {
+    let a = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+        if let Some(w) = a.get_webview_window(BANNER) {
+            let _ = w.close();
+        }
+        let Some(st) = st else { return };
+        let local = if st.at.is_empty() { st.until.get(11..16).map(|t| format!("{t} UTC")).unwrap_or_default() } else { st.at.clone() };
+        let enc = |s: &str| s.bytes().map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
+        let url = format!("control.html?who={}&until={}", enc(&st.agent), enc(&local));
+        let d = pick_display(&displays(&a), st.sw, st.sh);
+        let Ok(w) = WebviewWindowBuilder::new(&a, BANNER, WebviewUrl::App(url.into()))
+            .title("Valnivo Crew has control")
+            .decorations(false)
+            .always_on_top(true)
+            .visible_on_all_workspaces(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .focused(false)
+            .shadow(true)
+            .inner_size(BANNER_W, BANNER_H)
+            .build() else { return };
+        if let Some(d) = d {
+            // the display's space: points on macOS, physical pixels on Windows (displays())
+            let scale = if cfg!(target_os = "macos") { 1.0 } else { w.scale_factor().unwrap_or(1.0) };
+            let x = d.x + (d.w - BANNER_W * scale) / 2.0;
+            let y = d.y + 6.0 * scale;
+            if cfg!(target_os = "macos") {
+                let _ = w.set_position(tauri::LogicalPosition::new(x, y));
+            } else {
+                let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+            }
+        }
+        let _ = w.set_ignore_cursor_events(true);                       // clicks go through to what is under it
+        // it never outlives the grant: 15 s after the end time it closes on its own
+        if let Some(ms) = ms_until(&st.until) {
+            let a3 = a.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(ms + 15_000));
+                let a4 = a3.clone();
+                let _ = a3.run_on_main_thread(move || { if let Some(w) = a4.get_webview_window(BANNER) { let _ = w.close(); } });
+            });
+        }
+    });
+}
+
+/// Milliseconds from now until an ISO UTC time (YYYY-MM-DDTHH:MM:SS[.mmm]Z), without a date crate; None when it does not parse.
+pub fn ms_until(iso: &str) -> Option<u64> {
+    let t = epoch_of(iso)?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    Some(((t - now).max(0) as u64).min(6 * 3600) * 1000)
+}
+
+fn epoch_of(iso: &str) -> Option<i64> {
+    let b = iso.as_bytes();
+    if b.len() < 19 || b[4] != b'-' || b[10] != b'T' {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| iso.get(r)?.parse::<i64>().ok();
+    let (y, mo, d, h, mi, s) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
+    // days from civil (Howard Hinnant)
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
+    let yoe = y2 - era * 400;
+    let doy = (153 * (mo + if mo > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) * 86_400 + h * 3600 + mi * 60 + s)
+}
+
+
 /// The service itself, with the screens from `screens` (the app's monitors; fixed ones in tests).
-pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static) -> bool {
+pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_state: impl Fn(Option<CtlState>) + Send + 'static) -> bool {
     let server = match tiny_http::Server::http(("127.0.0.1", port)) {
         Ok(s) => s,
         Err(_) => return false,
@@ -315,6 +418,16 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static) -> 
                     asked = true;
                     let os = if cfg!(target_os = "macos") { "macos" } else { "windows" };
                     respond(req, 200, json!({"ok": 1, "accessibility": t, "displays": screens().len(), "v": 1, "os": os, "app": 1}), Some(&o), false);
+                }
+                (tiny_http::Method::Post, "/state") => {
+                    let mut body = String::new();
+                    if req.as_reader().take(BODY_MAX as u64).read_to_string(&mut body).is_err() {
+                        respond(req, 400, json!({"e": "body"}), Some(&o), false);
+                        continue;
+                    }
+                    let st = serde_json::from_str::<Value>(&body).ok().and_then(|v| state_of(&v));
+                    on_state(st);
+                    respond(req, 200, json!({"ok": true}), Some(&o), false);
                 }
                 (tiny_http::Method::Post, "/act") => {
                     let mut body = String::new();
@@ -375,8 +488,10 @@ mod tests {
     #[test]
     fn the_service_answers_only_the_console() {
         let port = 47_690;
-        assert!(serve(port, || vec![Display { x: 0.0, y: 0.0, w: 100.0, h: 100.0, pw: 100, ph: 100, main: true }]));
-        assert!(!serve(port, Vec::new), "a taken port is left to whoever has it (the separate helper)");
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<Option<CtlState>>::new()));
+        let s2 = seen.clone();
+        assert!(serve(port, || vec![Display { x: 0.0, y: 0.0, w: 100.0, h: 100.0, pw: 100, ph: 100, main: true }], move |st| s2.lock().unwrap().push(st)));
+        assert!(!serve(port, Vec::new, |_| {}), "a taken port is left to whoever has it (the separate helper)");
         let (c, _, b) = http(port, "GET", "/health", "https://console.valnivo.eu", "");
         assert_eq!(c, 200);
         assert!(b.contains("\"app\":1") && b.contains("\"displays\":1"), "{b}");
@@ -388,10 +503,27 @@ mod tests {
         assert_eq!(ac, 200);
         assert!(ab.contains("\"ok\":false"), "an unknown action is refused, nothing moves: {ab}");
         assert_eq!(http(port, "POST", "/act", "https://console.valnivo.eu", "not json").0, 400);
+        // the on-screen warning: on with who and until, then off; another site cannot raise or clear it
+        assert_eq!(http(port, "POST", "/state", "https://console.valnivo.eu", "{\"on\":true,\"agent\":\"desk supervisor\",\"until\":\"2026-11-17T14:30:00.000Z\",\"sw\":100,\"sh\":100}").0, 200);
+        assert_eq!(http(port, "POST", "/state", "https://evil.example", "{\"on\":false}").0, 403);
+        assert_eq!(http(port, "POST", "/state", "https://console.valnivo.eu", "{\"on\":false}").0, 200);
+        let v = seen.lock().unwrap().clone();
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].as_ref().map(|s| (s.agent.as_str(), s.sw)), Some(("desk supervisor", 100)));
+        assert!(v[1].is_none());
     }
 
     fn d(x: f64, y: f64, w: f64, h: f64, pw: u32, ph: u32, main: bool) -> Display {
         Display { x, y, w, h, pw, ph, main }
+    }
+
+    #[test]
+    fn end_time_parses_without_a_date_crate() {
+        assert_eq!(epoch_of("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(epoch_of("2026-11-17T14:30:00.000Z"), Some(1_794_925_800));
+        assert_eq!(epoch_of("nonsense"), None);
+        assert_eq!(state_of(&json!({"on": false})), None);
+        assert_eq!(state_of(&json!({"on": true, "agent": "a\u{7}b"})).unwrap().agent, "ab", "control characters are dropped");
     }
 
     #[test]
