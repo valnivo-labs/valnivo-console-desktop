@@ -184,6 +184,50 @@ pub fn plan(a: &Value, displays: &[Display]) -> Result<Plan, String> {
     }
 }
 
+/// The grant a pass stands for, as the Console confirmed it (POST <origin>/api/screen/pass).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Verified {
+    pub agent: String,
+    pub left_ms: u64,
+}
+/// Checks a pass with the Console: (origin, pass) -> the live grant, or None. Tests pass a fake.
+pub type Verifier = std::sync::Arc<dyn Fn(&str, &str) -> Option<Verified> + Send + Sync>;
+/// How often a pass in use is checked again (a grant taken back on the Console stops the app within this).
+pub const RECHECK_MS: u64 = 60_000;
+
+/// Audit 17 Nov: the Origin header is all a browser can prove, and any program on the computer can send it. So the app obeys only
+/// a pass that the Console confirms is a live grant: a local program without the person's page has none.
+pub fn verify_with_console(origin: &str, pass: &str) -> Option<Verified> {
+    if !pass_shape(pass) || !ORIGINS.contains(&origin) {
+        return None;
+    }
+    let body = json!({"pass": pass}).to_string();
+    let r = ureq::post(&format!("{origin}/api/screen/pass")).timeout(Duration::from_secs(6)).set("content-type", "application/json").send_string(&body).ok()?;
+    let v: Value = serde_json::from_str(&r.into_string().ok()?).ok()?;
+    if v.get("ok").and_then(Value::as_u64) != Some(1) {
+        return None;
+    }
+    Some(Verified { agent: v.get("agent").and_then(Value::as_str).unwrap_or("A crew agent").chars().filter(|c| !c.is_control()).take(60).collect(),
+                    left_ms: v.get("left_ms").and_then(Value::as_u64).unwrap_or(0) })
+}
+pub fn pass_shape(p: &str) -> bool {
+    p.len() >= 23 && p.len() <= 63 && p.starts_with("lp_") && p[3..].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+/// DNS rebinding: a request must name this computer (127.0.0.1 or localhost), never another host name.
+pub fn host_ok(host: &str) -> bool {
+    let h = host.rsplit_once(':').map_or(host, |(h, p)| if p.chars().all(|c| c.is_ascii_digit()) { h } else { host });
+    h == "127.0.0.1" || h == "localhost"
+}
+
+/// The pass in use and what the Console said about it.
+#[derive(Clone, Debug)]
+struct PassOk {
+    pass: String,
+    origin: String,
+    until: u64,
+    checked: u64,
+}
+
 /// Is this request from the Console's own page? The exact origin, never a prefix.
 pub fn origin_ok(origin: &str) -> Option<String> {
     let o = origin.trim_end_matches('/');
@@ -301,7 +345,7 @@ fn respond(req: tiny_http::Request, code: u16, body: Value, origin: Option<&str>
 pub fn start(app: AppHandle) -> bool {
     let port = std::env::var("VALNIVO_HELPER_PORT").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(PORT);   // tests; the page uses 47613
     let a2 = app.clone();
-    serve(port, move || displays(&app), move |st| banner(&a2, st), true).is_some()
+    serve(port, move || displays(&app), move |st| banner(&a2, st), true, std::sync::Arc::new(verify_with_console)).is_some()
 }
 
 /// What the page says about control (POST /state): on, who, until (ISO), the shared screen's capture size.
@@ -438,7 +482,7 @@ fn phase_name(p: Phase) -> &'static str {
 /// (the app; tests pass false so nothing on the developer's computer is ever blocked). Returns the input guard, None when the port
 /// is taken.
 pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_state: impl Fn(Option<CtlState>) + Send + Sync + 'static,
-             native: bool) -> Option<&'static ig::Guard> {
+             native: bool, verify: Verifier) -> Option<&'static ig::Guard> {
     let server = match tiny_http::Server::http(("127.0.0.1", port)) {
         Ok(s) => s,
         Err(_) => return None,
@@ -446,6 +490,7 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_
     let ig: &'static ig::Guard = Box::leak(Box::default());
     let on_state = std::sync::Arc::new(on_state);
     let last_state: &'static Mutex<Option<CtlState>> = Box::leak(Box::new(Mutex::new(None)));
+    let pass_ok: &'static Mutex<Option<PassOk>> = Box::leak(Box::new(Mutex::new(None)));
     // the watcher: hands-off gives the input back after 10 minutes without the agent, control ends at its end time, a triple Esc
     // takes the banner down; the banner text follows the phase
     {
@@ -502,6 +547,11 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_
             let origin = req.headers().iter().find(|h| h.field.equiv("Origin")).map(|h| h.value.as_str().to_string()).unwrap_or_default();
             let ok_origin = origin_ok(&origin);
             let (method, path) = (req.method().clone(), req.url().to_string());
+            let host = req.headers().iter().find(|h| h.field.equiv("Host")).map(|h| h.value.as_str().to_string()).unwrap_or_default();
+            if !host_ok(&host) {
+                respond(req, 403, json!({"e": "host"}), None, false);
+                continue;
+            }
             if method == tiny_http::Method::Options {
                 match ok_origin {
                     Some(o) => respond(req, 204, json!({}), Some(&o), true),
@@ -529,8 +579,29 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_
                         respond(req, 400, json!({"e": "body"}), Some(&o), false);
                         continue;
                     }
-                    let mut st = serde_json::from_str::<Value>(&body).ok().and_then(|v| state_of(&v));
-                    let until = st.as_ref().and_then(|s| ms_until(&s.until)).map(|ms| ig::now_ms() + ms + 15_000).unwrap_or(0);
+                    let v = serde_json::from_str::<Value>(&body).ok();
+                    let mut st = v.as_ref().and_then(state_of);
+                    // on: only with a pass the Console confirms; the agent's name and the end time come from the Console, not the caller
+                    let mut until = 0;
+                    if let Some(s) = st.as_mut() {
+                        let pass = v.as_ref().and_then(|v| v.get("pass")).and_then(Value::as_str).unwrap_or("").to_string();
+                        match verify(&o, &pass) {
+                            Some(ok) if ok.left_ms > 0 => {
+                                let now = ig::now_ms();
+                                until = now + ok.left_ms + 15_000;
+                                s.agent = ok.agent.clone();
+                                if let Ok(mut p) = pass_ok.lock() {
+                                    *p = Some(PassOk { pass, origin: o.clone(), until, checked: now });
+                                }
+                            }
+                            _ => {
+                                respond(req, 403, json!({"e": "pass", "why": "the Console did not confirm this grant"}), Some(&o), false);
+                                continue;
+                            }
+                        }
+                    } else if let Ok(mut p) = pass_ok.lock() {
+                        *p = None;
+                    }
                     ig.set(st.is_some(), st.as_ref().is_some_and(|s| s.hands_off), until);
                     // the hooks only while control is on; hands-off can block only when they are up
                     let hooked = st.is_some() && native && ig::engage(ig);
@@ -566,6 +637,32 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_
                         let s = ig.snap();
                         if s.on && s.stopped {
                             return Err(ig::STOPPED_ESC.into());
+                        }
+                        // only while a grant the Console confirmed lives, and only with its pass
+                        let pass = a.get("pass").and_then(Value::as_str).unwrap_or("");
+                        let now = ig::now_ms();
+                        let cur = pass_ok.lock().map_err(|_| "busy")?.clone();
+                        let Some(mut p) = cur.filter(|p| s.on && p.pass == pass && now < p.until) else {
+                            return Err("control is not given on this computer (no live grant)".into());
+                        };
+                        if now.saturating_sub(p.checked) > RECHECK_MS {
+                            match verify(&p.origin, &p.pass) {
+                                Some(ok) if ok.left_ms > 0 => {
+                                    p.until = now + ok.left_ms + 15_000;
+                                    p.checked = now;
+                                    ig.until.store(p.until, std::sync::atomic::Ordering::SeqCst);
+                                    if let Ok(mut g) = pass_ok.lock() {
+                                        *g = Some(p);
+                                    }
+                                }
+                                _ => {
+                                    if let Ok(mut g) = pass_ok.lock() {
+                                        *g = None;
+                                    }
+                                    ig.until.store(1, std::sync::atomic::Ordering::SeqCst); // the watcher ends it (and takes the banner down)
+                                    return Err("control was taken back on the Console".into());
+                                }
+                            }
                         }
                         let mut g = guard.lock().map_err(|_| "busy")?;
                         if let Some(en) = enigo.as_mut() {
@@ -617,6 +714,18 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_
 mod tests {
     use super::*;
 
+    const GOOD: &str = "lp_good_pass_0123456789abcd";
+    fn fake() -> Verifier {
+        std::sync::Arc::new(|o: &str, p: &str| (o == "https://console.valnivo.eu" && p == GOOD).then(|| Verified { agent: "desk supervisor".into(), left_ms: 3_600_000 }))
+    }
+
+    #[test]
+    fn pass_and_host_rules() {
+        assert!(pass_shape(GOOD) && !pass_shape("sc_good_pass_0123456789abcd") && !pass_shape("lp_short") && !pass_shape("lp_bad pass 0123456789abcdef"));
+        assert!(host_ok("127.0.0.1:47613") && host_ok("localhost:47613") && host_ok("127.0.0.1"));
+        assert!(!host_ok("evil.example:47613") && !host_ok("127.0.0.1.evil.example") && !host_ok(""), "DNS rebinding names are refused");
+    }
+
     #[test]
     fn stop_corner_is_the_main_displays_top_left_only() {
         assert!(in_stop_corner(0.0, 0.0) && in_stop_corner(4.0, 4.0));
@@ -660,9 +769,9 @@ mod tests {
         let port = 47_690;
         let seen = std::sync::Arc::new(Mutex::new(Vec::<Option<CtlState>>::new()));
         let s2 = seen.clone();
-        let g = serve(port, || vec![Display { x: 0.0, y: 0.0, w: 100.0, h: 100.0, pw: 100, ph: 100, main: true }], move |st| s2.lock().unwrap().push(st), false);
+        let g = serve(port, || vec![Display { x: 0.0, y: 0.0, w: 100.0, h: 100.0, pw: 100, ph: 100, main: true }], move |st| s2.lock().unwrap().push(st), false, fake());
         assert!(g.is_some());
-        assert!(serve(port, Vec::new, |_| {}, false).is_none(), "a taken port is left to whoever has it (the separate helper)");
+        assert!(serve(port, Vec::new, |_| {}, false, fake()).is_none(), "a taken port is left to whoever has it (the separate helper)");
         let (c, _, b) = http(port, "GET", "/health", "https://console.valnivo.eu", "");
         assert_eq!(c, 200);
         assert!(b.contains("\"app\":1") && b.contains("\"displays\":1"), "{b}");
@@ -675,7 +784,14 @@ mod tests {
         assert!(ab.contains("\"ok\":false"), "an unknown action is refused, nothing moves: {ab}");
         assert_eq!(http(port, "POST", "/act", "https://console.valnivo.eu", "not json").0, 400);
         // the on-screen warning: on with who and until, then off; another site cannot raise or clear it
-        assert_eq!(http(port, "POST", "/state", "https://console.valnivo.eu", "{\"on\":true,\"agent\":\"desk supervisor\",\"until\":\"2026-11-17T14:30:00.000Z\",\"sw\":100,\"sh\":100}").0, 200);
+        // audit 17 Nov: no pass, a wrong pass, a forged Origin from another program without a pass: nothing turns on, nothing moves
+        assert_eq!(http(port, "POST", "/state", "https://console.valnivo.eu", "{\"on\":true,\"agent\":\"x\"}").0, 403);
+        assert_eq!(http(port, "POST", "/state", "https://console.valnivo.eu", "{\"on\":true,\"agent\":\"x\",\"pass\":\"lp_wrong_pass_0123456789ab\"}").0, 403);
+        let (_, _, nb) = http(port, "POST", "/act", "https://console.valnivo.eu", "{\"kind\":\"click\",\"nx\":0.5,\"ny\":0.5}");
+        assert!(nb.contains("no live grant"), "{nb}");
+        assert_eq!(http(port, "POST", "/state", "https://console.valnivo.eu", &format!("{{\"on\":true,\"agent\":\"spoofed name\",\"until\":\"2026-11-17T14:30:00.000Z\",\"sw\":100,\"sh\":100,\"pass\":\"{GOOD}\"}}")).0, 200);
+        let (_, _, wb) = http(port, "POST", "/act", "https://console.valnivo.eu", "{\"kind\":\"click\",\"nx\":0.5,\"ny\":0.5,\"pass\":\"lp_wrong_pass_0123456789ab\"}");
+        assert!(wb.contains("no live grant"), "the wrong pass during a grant: {wb}");
         assert_eq!(http(port, "POST", "/state", "https://evil.example", "{\"on\":false}").0, 403);
         assert_eq!(http(port, "POST", "/state", "https://console.valnivo.eu", "{\"on\":false}").0, 200);
         let v = seen.lock().unwrap().clone();
@@ -690,22 +806,22 @@ mod tests {
         let port = 47_691;
         let seen = std::sync::Arc::new(Mutex::new(Vec::<Option<CtlState>>::new()));
         let s2 = seen.clone();
-        let g = serve(port, || vec![Display { x: 0.0, y: 0.0, w: 100.0, h: 100.0, pw: 100, ph: 100, main: true }], move |st| s2.lock().unwrap().push(st), false).unwrap();
+        let g = serve(port, || vec![Display { x: 0.0, y: 0.0, w: 100.0, h: 100.0, pw: 100, ph: 100, main: true }], move |st| s2.lock().unwrap().push(st), false, fake()).unwrap();
         let c = "https://console.valnivo.eu";
         // an old page (no handsOff): yield only
-        let (sc, _, sb) = http(port, "POST", "/state", c, "{\"on\":true,\"agent\":\"a\",\"until\":\"2099-01-01T00:00:00Z\"}");
+        let (sc, _, sb) = http(port, "POST", "/state", c, &format!("{{\"on\":true,\"agent\":\"a\",\"until\":\"2099-01-01T00:00:00Z\",\"pass\":\"{GOOD}\"}}"));
         assert_eq!(sc, 200);
         assert!(sb.contains("\"handsOff\":false"), "{sb}");
         assert!(!g.hands_off.load(SeqCst));
         // the person moves the mouse: the agent's click waits, with retry
         g.note_user();
-        let (_, _, ab) = http(port, "POST", "/act", c, "{\"kind\":\"click\",\"nx\":0.5,\"ny\":0.5}");
+        let (_, _, ab) = http(port, "POST", "/act", c, &format!("{{\"kind\":\"click\",\"nx\":0.5,\"ny\":0.5,\"pass\":\"{GOOD}\"}}"));
         assert!(ab.contains("\"ok\":false") && ab.contains("\"retry\":true") && ab.contains(ig::WAITING), "{ab}");
         // a bad action is still refused outright (no retry)
-        let (_, _, bb) = http(port, "POST", "/act", c, "{\"kind\":\"launch\"}");
+        let (_, _, bb) = http(port, "POST", "/act", c, &format!("{{\"kind\":\"launch\",\"pass\":\"{GOOD}\"}}"));
         assert!(!bb.contains("retry"), "{bb}");
         // Hands-off asked for: recorded; without hooks (this test) it cannot block, and the page is told so
-        let (_, _, hb) = http(port, "POST", "/state", c, "{\"on\":true,\"agent\":\"a\",\"handsOff\":true}");
+        let (_, _, hb) = http(port, "POST", "/state", c, &format!("{{\"on\":true,\"agent\":\"a\",\"handsOff\":true,\"pass\":\"{GOOD}\"}}"));
         assert!(hb.contains("\"handsOff\":false"), "no hooks here: {hb}");
         assert!(!g.hands_off.load(SeqCst), "it falls back to yield");
         assert_eq!(seen.lock().unwrap().last().cloned().flatten().map(|s| (s.hands_off, s.mode)), Some((true, "yield")));
@@ -719,14 +835,14 @@ mod tests {
             g.on_event(false, esc);
         }
         assert!(g.stopped.load(SeqCst));
-        let (_, _, sb2) = http(port, "POST", "/act", c, "{\"kind\":\"key\",\"key\":\"return\"}");
+        let (_, _, sb2) = http(port, "POST", "/act", c, &format!("{{\"kind\":\"key\",\"key\":\"return\",\"pass\":\"{GOOD}\"}}"));
         assert!(sb2.contains(ig::STOPPED_ESC) && !sb2.contains("retry"), "{sb2}");
         let (_, _, h) = http(port, "GET", "/health", c, "");
         assert!(h.contains("\"stopped\":true") && h.contains("\"modes\":2"), "{h}");
         std::thread::sleep(Duration::from_millis(600));
         assert!(seen.lock().unwrap().last().unwrap().is_none(), "the banner goes when the person stops it");
         // a new grant forgets the stop
-        http(port, "POST", "/state", c, "{\"on\":true,\"agent\":\"a\"}");
+        http(port, "POST", "/state", c, &format!("{{\"on\":true,\"agent\":\"a\",\"pass\":\"{GOOD}\"}}"));
         assert!(http(port, "GET", "/health", c, "").2.contains("\"stopped\":false"));
         http(port, "POST", "/state", c, "{\"on\":false}");
         assert!(!g.on.load(SeqCst) && !g.hands_off.load(SeqCst));
