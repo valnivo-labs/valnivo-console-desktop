@@ -9,6 +9,19 @@ People on 0.9.0 install 0.10.0 once from the downloads page (that build has no u
 What the app adds over the browser tab: its own window and Dock / taskbar icon, remembered size and place, one copy at a time
 (opening it again brings the window forward), and links to other sites open in your normal browser. The page may show a notification, set the Dock badge, read the app version, and install a signed update. No other command is exposed.
 
+## Give control (from 0.11.0)
+
+When you share your **entire screen** in a chat and press **Give control**, the chat's agent clicks and types on your computer
+for the time you picked. A web page cannot do that (no browser lets a site move your mouse), so the app does it: while it runs it
+answers the chat on `127.0.0.1:47613` (only on this computer, only for the Console's own pages), the same small protocol as the
+separate `desktop-helper` that browser users install. Push the mouse into the **top-left corner** to stop it at once, or press
+**Take back control**.
+
+- **macOS:** the first time, macOS asks to allow *Valnivo Crew* under **System Settings → Privacy & Security → Accessibility**.
+  Until the app is signed with an Apple Developer ID, macOS may ask again after an update (the ad-hoc signature changes).
+- **Windows:** nothing to allow. It cannot click into windows that run as administrator.
+- If the separate helper already runs, the app leaves the port to it.
+
 ## Getting the apps
 
 The apps are built in the **public** repository [valnivo-labs/valnivo-crew-desktop](https://github.com/valnivo-labs/valnivo-crew-desktop),

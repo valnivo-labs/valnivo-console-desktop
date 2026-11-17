@@ -1,6 +1,6 @@
 [package]
 name = "valnivo-console"
-version = "0.10.1"
+version = "0.11.0"
 description = "Valnivo Crew as an app for macOS and Windows"
 edition = "2021"
 publish = false
@@ -16,7 +16,9 @@ tauri-plugin-window-state = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-serde_json = "1"   # tauri::generate_context! expands to serde_json::json! once plugins.updater is in tauri.conf.json
+serde_json = "1"
+enigo = "0.2"          # Give control, built into the app (src/control.rs): real mouse and keyboard input
+tiny_http = "0.12"     # the local control service on 127.0.0.1:47613 (same protocol as desktop-helper)   # tauri::generate_context! expands to serde_json::json! once plugins.updater is in tauri.conf.json
 
 [profile.release]
 codegen-units = 1
@@ -24,3 +26,6 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+macos-accessibility-client = "0.0.1"   # AXIsProcessTrusted(WithOptions): ask the person for Accessibility once

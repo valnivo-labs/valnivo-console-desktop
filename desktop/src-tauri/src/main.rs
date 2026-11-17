@@ -5,6 +5,8 @@
 // Nothing else is exposed. The private update key is not in this program.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod control;
+
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
@@ -36,6 +38,8 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Kabil 17 Nov: Give control is built into the app (control.rs); the separate helper stays the fallback for a browser
+            let _ = control::start(app.handle().clone());
             let home: Url = HOME.parse().expect("the Console address");
             let handle = app.handle().clone();
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(home))
