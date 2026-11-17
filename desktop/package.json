@@ -1,8 +1,8 @@
 {
   "name": "valnivo-console-desktop",
   "private": true,
-  "version": "0.16.0",
-  "description": "Valnivo Crew as an app for macOS and Windows (a Tauri 2 window on console.valnivo.eu)",
+  "version": "0.17.0",
+  "description": "Valnivo Console as an app for macOS and Windows (a Tauri 2 window on console.valnivo.eu)",
   "scripts": {
     "icons": "tauri icon icon/crew-1024.png -o src-tauri/icons",
     "dev": "tauri dev",

@@ -1,4 +1,4 @@
-// Card 739: the Valnivo Console as an app for macOS and Windows. One window on https://console.valnivo.eu/ui/ (the same Console
+// Card 739: Valnivo Console (testing) as an app for macOS and Windows. One window on https://console.valnivo.eu/ui/ (the same Console
 // as the browser, signed in with the same account), remembered size and place, one copy at a time, and links to anywhere else
 // open in the normal browser. The page gets almost no access to the computer: only Valnivo Crew's own site may show a
 // notification, put the waiting count on the Dock icon, and install a signed update (capabilities/default.json).
@@ -11,7 +11,7 @@ mod input_guard;
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
-const HOME: &str = "https://crew.valnivo.eu/ui/";   // Kabil 17 Nov: the crew app moved here; console.valnivo.eu becomes the testing app
+const HOME: &str = "https://console.valnivo.eu/ui/";   // Kabil 17 Nov: this app is Valnivo Console (testing); Valnivo Crew has its own app
 
 /// Pages that stay in the app window: the Console itself and Valnivo's own hosts (the shared desktop view); local schemes
 /// the page uses for downloads and previews.
