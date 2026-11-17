@@ -11,7 +11,7 @@ mod input_guard;
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
-const HOME: &str = "https://console.valnivo.eu/ui/";
+const HOME: &str = "https://crew.valnivo.eu/ui/";   // Kabil 17 Nov: the crew app moved here; console.valnivo.eu becomes the testing app
 
 /// Pages that stay in the app window: the Console itself and Valnivo's own hosts (the shared desktop view); local schemes
 /// the page uses for downloads and previews.
