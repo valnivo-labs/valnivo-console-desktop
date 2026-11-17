@@ -446,7 +446,7 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_
     let ig: &'static ig::Guard = Box::leak(Box::default());
     let on_state = std::sync::Arc::new(on_state);
     let last_state: &'static Mutex<Option<CtlState>> = Box::leak(Box::new(Mutex::new(None)));
-    // the watcher: hands-off gives the input back after a minute without the agent, control ends at its end time, a triple Esc
+    // the watcher: hands-off gives the input back after 10 minutes without the agent, control ends at its end time, a triple Esc
     // takes the banner down; the banner text follows the phase
     {
         let on_state = on_state.clone();

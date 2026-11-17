@@ -21,7 +21,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 pub const YIELD_IDLE_MS: u64 = 4_000;
-pub const HANDS_OFF_IDLE_MS: u64 = 60_000;
+pub const HANDS_OFF_IDLE_MS: u64 = 600_000; // Kabil 17 Nov: 60 s was too short, the crew often thinks longer between actions
 pub const ESC_WINDOW_MS: u64 = 1_500;
 pub const ESC_COUNT: usize = 3;
 /// Marks the agent's own events on macOS (enigo's event_source_user_data); "VALN".
@@ -148,7 +148,7 @@ pub enum Phase {
     Off,
     Yield,
     HandsOff,
-    /// hands-off was on and gave the input back (no agent action for a minute)
+    /// hands-off was on and gave the input back (no agent action for 10 minutes)
     Released,
     Stopped,
 }
@@ -698,7 +698,7 @@ mod tests {
         let busy = Snap { injecting: true, ..yi };
         assert!(!d(decide(false, Kind::Move, &busy, 2_000, &mut e)));
         assert!(d(decide(false, Kind::Down, &busy, 2_000, &mut e)));
-        // a minute without the agent: input is back
+        // 10 minutes without the agent: input is back
         assert!(p(decide(false, Kind::Down, &ho, 1_000 + HANDS_OFF_IDLE_MS, &mut e)));
     }
 

@@ -15,6 +15,6 @@
   var q = new URLSearchParams(location.search), who = q.get("who") || "A crew agent", until = q.get("until") || "", mode = q.get("mode") || "";
   var head = who + " is controlling this computer" + (until ? " until " + until : "") + ". ";
   document.getElementById("t").textContent = mode === "handsoff" ? "Hands-off: your mouse and keyboard are paused. Press Esc 3 times to take back control."
-    : mode === "released" ? head + "Hands-off ended (no action for a minute): your mouse and keyboard work again."
+    : mode === "released" ? head + "Hands-off ended (no action for 10 minutes): your mouse and keyboard work again."
     : head + "It waits while you use the mouse or keyboard. Mouse to the top-left corner to stop.";
 </script></body></html>
