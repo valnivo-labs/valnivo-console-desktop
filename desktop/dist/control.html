@@ -11,6 +11,10 @@
 <body><div class="b" role="alert"><span class="d" aria-hidden="true"></span><span id="t">The crew is controlling this computer</span></div>
 <script>
   // Kabil 17 Nov: the warning the app keeps on top of every window while a crew agent has control (control.rs)
-  var q = new URLSearchParams(location.search), who = q.get("who") || "A crew agent", until = q.get("until") || "";
-  document.getElementById("t").textContent = who + " is controlling this computer" + (until ? " until " + until : "") + ". Mouse to the top-left corner to stop.";
+  // 0.14.0 (input_guard.rs): mode=handsoff while the person's mouse and keyboard are paused; released once hands-off gave them back
+  var q = new URLSearchParams(location.search), who = q.get("who") || "A crew agent", until = q.get("until") || "", mode = q.get("mode") || "";
+  var head = who + " is controlling this computer" + (until ? " until " + until : "") + ". ";
+  document.getElementById("t").textContent = mode === "handsoff" ? "Hands-off: your mouse and keyboard are paused. Press Esc 3 times to take back control."
+    : mode === "released" ? head + "Hands-off ended (no action for a minute): your mouse and keyboard work again."
+    : head + "It waits while you use the mouse or keyboard. Mouse to the top-left corner to stop.";
 </script></body></html>

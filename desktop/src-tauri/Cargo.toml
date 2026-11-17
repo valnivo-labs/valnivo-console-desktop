@@ -1,6 +1,6 @@
 [package]
 name = "valnivo-console"
-version = "0.13.0"
+version = "0.14.0"
 description = "Valnivo Crew as an app for macOS and Windows"
 edition = "2021"
 publish = false
@@ -29,3 +29,6 @@ strip = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 macos-accessibility-client = "0.0.1"   # AXIsProcessTrusted(WithOptions): ask the person for Accessibility once
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(win_check)"] }   # RUSTFLAGS="--cfg win_check" cargo check: type-checks the Windows hooks on a Mac

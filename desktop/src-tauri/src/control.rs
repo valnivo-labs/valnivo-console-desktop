@@ -9,7 +9,10 @@
 //!   - the mouse in the top-left corner stops it for a minute (the person takes back control at once);
 //!   - text is at most 500 characters per action; only named keys and cmd/ctrl/alt/shift; no Windows-key shortcuts;
 //!   - on macOS nothing happens until the person allows the app under Privacy & Security > Accessibility (asked once).
+//!
 //! If the port is taken (the separate helper already runs) the app leaves it to the helper.
+//! Input modes (from 0.14.0, input_guard.rs): by default the agent waits while the person uses the mouse or keyboard (yield; /act answers
+//! retry:true); with handsOff:true in /state the person's own input is paused while control is on, Esc 3 times takes it back.
 use std::io::Read;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -17,6 +20,8 @@ use std::time::{Duration, Instant};
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use serde_json::{json, Value};
 use tauri::AppHandle;
+
+use crate::input_guard::{self as ig, Phase};
 
 pub const PORT: u16 = 47613;
 const ORIGINS: &[&str] = &["https://console.valnivo.eu"];
@@ -101,6 +106,22 @@ pub fn mod_of(name: &str) -> Option<Key> {
     })
 }
 
+/// The stop corner: the top-left of the MAIN display only (its origin is 0,0 on macOS and Windows). Kabil 17 Nov: control ended by
+/// itself. The old check (x <= 4 && y <= 4, no lower bound) also matched every point left of and above the main display, so a
+/// screen placed left/above it (negative coordinates) counted as "the corner" as soon as the agent clicked there.
+pub fn in_stop_corner(x: f64, y: f64) -> bool {
+    (0.0..=CORNER as f64).contains(&x) && (0.0..=CORNER as f64).contains(&y)
+}
+
+/// The person pushed the pointer into the corner: it is there, and not where the agent itself last put it.
+pub fn person_in_corner(mouse: (i32, i32), agent_last: Option<(f64, f64)>) -> bool {
+    let (mx, my) = (mouse.0 as f64, mouse.1 as f64);
+    if !in_stop_corner(mx, my) {
+        return false;
+    }
+    !agent_last.is_some_and(|(ax, ay)| (ax - mx).abs() <= 2.0 && (ay - my).abs() <= 2.0)
+}
+
 /// What one action asks for, checked before anything moves (pure: tested without a screen).
 #[derive(Debug, PartialEq)]
 pub enum Plan {
@@ -123,7 +144,7 @@ pub fn plan(a: &Value, displays: &[Display]) -> Result<Plan, String> {
             let sh = a.get("sh").and_then(Value::as_u64).unwrap_or(0) as u32;
             let d = pick_display(displays, sw, sh).ok_or("no display")?;
             let (mut x, mut y) = (d.x + nx * d.w, d.y + ny * d.h);
-            if x <= CORNER as f64 && y <= CORNER as f64 {
+            if in_stop_corner(x, y) {
                 x = CORNER as f64 + 1.0; // never into the stop corner itself
                 y = CORNER as f64 + 1.0;
             }
@@ -200,6 +221,8 @@ fn displays(app: &AppHandle) -> Vec<Display> {
 
 struct Guard {
     paused_until: Option<Instant>,
+    /// where the agent last moved the pointer (a click or scroll), so its own position is never read as the person's stop
+    agent_last: Option<(f64, f64)>,
 }
 
 /// Moves the pointer. On Windows with SetCursorPos in physical pixels (the app is per-monitor DPI aware), which places it right on
@@ -278,7 +301,7 @@ fn respond(req: tiny_http::Request, code: u16, body: Value, origin: Option<&str>
 pub fn start(app: AppHandle) -> bool {
     let port = std::env::var("VALNIVO_HELPER_PORT").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(PORT);   // tests; the page uses 47613
     let a2 = app.clone();
-    serve(port, move || displays(&app), move |st| banner(&a2, st))
+    serve(port, move || displays(&app), move |st| banner(&a2, st), true).is_some()
 }
 
 /// What the page says about control (POST /state): on, who, until (ISO), the shared screen's capture size.
@@ -290,6 +313,10 @@ pub struct CtlState {
     pub at: String,
     pub sw: u32,
     pub sh: u32,
+    /// the person asked for Hands-off (their mouse and keyboard pause while control is on)
+    pub hands_off: bool,
+    /// what the banner says: "yield", "handsoff" (blocking now) or "released" (hands-off gave the input back)
+    pub mode: &'static str,
 }
 
 /// The on-screen warning (Kabil 17 Nov: "the screen is under the crew's control: visible, as a warning"): a red banner window at the
@@ -305,6 +332,8 @@ pub fn state_of(v: &Value) -> Option<CtlState> {
         at: clean(v.get("at").and_then(Value::as_str).unwrap_or(""), 8),
         sw: v.get("sw").and_then(Value::as_u64).unwrap_or(0) as u32,
         sh: v.get("sh").and_then(Value::as_u64).unwrap_or(0) as u32,
+        hands_off: v.get("handsOff") == Some(&Value::Bool(true)),
+        mode: "yield",
     })
 }
 
@@ -331,7 +360,7 @@ fn banner(app: &AppHandle, st: Option<CtlState>) {
         let Some(st) = st else { return };
         let local = if st.at.is_empty() { st.until.get(11..16).map(|t| format!("{t} UTC")).unwrap_or_default() } else { st.at.clone() };
         let enc = |s: &str| s.bytes().map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
-        let url = format!("control.html?who={}&until={}", enc(&st.agent), enc(&local));
+        let url = format!("control.html?who={}&until={}&mode={}", enc(&st.agent), enc(&local), st.mode);
         for (i, d) in displays(&a).iter().enumerate() {
             let Ok(w) = WebviewWindowBuilder::new(&a, format!("{BANNER}-{i}"), WebviewUrl::App(url.clone().into()))
                 .title("Valnivo Crew has control")
@@ -395,15 +424,76 @@ fn epoch_of(iso: &str) -> Option<i64> {
 }
 
 
-/// The service itself, with the screens from `screens` (the app's monitors; fixed ones in tests).
-pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_state: impl Fn(Option<CtlState>) + Send + 'static) -> bool {
+fn phase_name(p: Phase) -> &'static str {
+    match p {
+        Phase::Off => "off",
+        Phase::Yield => "yield",
+        Phase::HandsOff => "handsoff",
+        Phase::Released => "released",
+        Phase::Stopped => "stopped",
+    }
+}
+
+/// The service itself, with the screens from `screens` (the app's monitors; fixed ones in tests). `native`: install the input hooks
+/// (the app; tests pass false so nothing on the developer's computer is ever blocked). Returns the input guard, None when the port
+/// is taken.
+pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_state: impl Fn(Option<CtlState>) + Send + Sync + 'static,
+             native: bool) -> Option<&'static ig::Guard> {
     let server = match tiny_http::Server::http(("127.0.0.1", port)) {
         Ok(s) => s,
-        Err(_) => return false,
+        Err(_) => return None,
     };
+    let ig: &'static ig::Guard = Box::leak(Box::default());
+    let on_state = std::sync::Arc::new(on_state);
+    let last_state: &'static Mutex<Option<CtlState>> = Box::leak(Box::new(Mutex::new(None)));
+    // the watcher: hands-off gives the input back after a minute without the agent, control ends at its end time, a triple Esc
+    // takes the banner down; the banner text follows the phase
+    {
+        let on_state = on_state.clone();
+        std::thread::spawn(move || {
+            let mut was = Phase::Off;
+            loop {
+                std::thread::sleep(Duration::from_millis(250));
+                let now = ig::now_ms();
+                let s = ig.snap();
+                if ig::idle_release_due(&s, now) {
+                    ig.released.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                let until = ig.until.load(std::sync::atomic::Ordering::SeqCst);
+                let ended = s.on && until != 0 && now > until;
+                if ended {
+                    ig.set(false, false, 0);
+                    if native {
+                        ig::disengage();
+                    }
+                }
+                let p = ig::phase(&ig.snap(), now);
+                if p == was {
+                    continue;
+                }
+                let st = last_state.lock().ok().and_then(|g| g.clone());
+                match p {
+                    Phase::Off | Phase::Stopped => {
+                        if native {
+                            ig::disengage(); // nothing to filter any more
+                        }
+                        // /state off takes the banner down itself; the end time passing or a triple Esc happen here
+                        if p == Phase::Stopped || ended {
+                            on_state(None);
+                        }
+                    }
+                    _ if was == Phase::Off => {} // /state already raised the banner
+                    _ => on_state(st.map(|st| CtlState { mode: phase_name(p), ..st })),
+                }
+                was = p;
+            }
+        });
+    }
     std::thread::spawn(move || {
-        let guard = Mutex::new(Guard { paused_until: None });
-        let mut enigo = match Enigo::new(&Settings::default()) {
+        let guard = Mutex::new(Guard { paused_until: None, agent_last: None });
+        // the agent's events carry MAGIC (macOS) and the injected flag (Windows), so the hooks let them through and never count them
+        let settings = Settings { event_source_user_data: Some(ig::MAGIC), windows_dw_extra_info: Some(ig::MAGIC as usize), ..Settings::default() };
+        let mut enigo = match Enigo::new(&settings) {
             Ok(e) => Some(e),
             Err(_) => None,
         };
@@ -429,7 +519,9 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_
                     let t = trusted(!asked);
                     asked = true;
                     let os = if cfg!(target_os = "macos") { "macos" } else { "windows" };
-                    respond(req, 200, json!({"ok": 1, "accessibility": t, "displays": screens().len(), "v": 1, "os": os, "app": 1}), Some(&o), false);
+                    let s = ig.snap();
+                    respond(req, 200, json!({"ok": 1, "accessibility": t, "displays": screens().len(), "v": 1, "os": os, "app": 1,
+                                             "modes": 2, "mode": phase_name(ig::phase(&s, ig::now_ms())), "stopped": s.on && s.stopped}), Some(&o), false);
                 }
                 (tiny_http::Method::Post, "/state") => {
                     let mut body = String::new();
@@ -437,9 +529,26 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_
                         respond(req, 400, json!({"e": "body"}), Some(&o), false);
                         continue;
                     }
-                    let st = serde_json::from_str::<Value>(&body).ok().and_then(|v| state_of(&v));
+                    let mut st = serde_json::from_str::<Value>(&body).ok().and_then(|v| state_of(&v));
+                    let until = st.as_ref().and_then(|s| ms_until(&s.until)).map(|ms| ig::now_ms() + ms + 15_000).unwrap_or(0);
+                    ig.set(st.is_some(), st.as_ref().is_some_and(|s| s.hands_off), until);
+                    // the hooks only while control is on; hands-off can block only when they are up
+                    let hooked = st.is_some() && native && ig::engage(ig);
+                    if st.is_none() && native {
+                        ig::disengage();
+                    }
+                    if !hooked {
+                        ig.hands_off.store(false, std::sync::atomic::Ordering::SeqCst); // cannot block here: the agent waits instead
+                    }
+                    if let Some(s) = st.as_mut() {
+                        s.mode = if s.hands_off && hooked { "handsoff" } else { "yield" };
+                    }
+                    if let Ok(mut l) = last_state.lock() {
+                        *l = st.clone();
+                    }
+                    let hands_off = st.as_ref().is_some_and(|s| s.hands_off && hooked);
                     on_state(st);
-                    respond(req, 200, json!({"ok": true}), Some(&o), false);
+                    respond(req, 200, json!({"ok": true, "handsOff": hands_off}), Some(&o), false);
                 }
                 (tiny_http::Method::Post, "/act") => {
                     let mut body = String::new();
@@ -452,25 +561,48 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_
                         respond(req, 400, json!({"e": "json"}), Some(&o), false);
                         continue;
                     };
+                    let mut retry = false;
                     let res = (|| -> Result<(), String> {
-                        let en = enigo.as_mut().ok_or("input is not available on this computer")?;
+                        let s = ig.snap();
+                        if s.on && s.stopped {
+                            return Err(ig::STOPPED_ESC.into());
+                        }
                         let mut g = guard.lock().map_err(|_| "busy")?;
-                        let (mx, my) = en.location().unwrap_or((100, 100));
-                        if mx <= CORNER && my <= CORNER {
-                            g.paused_until = Some(Instant::now() + PAUSE);
-                            return Err("stopped: the person pushed the mouse into the top-left corner".into());
+                        if let Some(en) = enigo.as_mut() {
+                            let m = en.location().unwrap_or((100, 100));
+                            if person_in_corner(m, g.agent_last) {
+                                g.paused_until = Some(Instant::now() + PAUSE);
+                                return Err("stopped: the person pushed the mouse into the top-left corner".into());
+                            }
                         }
                         if g.paused_until.is_some_and(|t| Instant::now() < t) {
                             return Err("paused for a minute after the person stopped it".into());
                         }
+                        let p = plan(&a, &screens())?;
+                        // yield: the person is using the computer; the agent waits (the page asks again a little later)
+                        let mut last_user = s.last_user;
+                        if native && !ig.hooked.load(std::sync::atomic::Ordering::SeqCst) {
+                            last_user = last_user.max(ig::fallback_user(ig));
+                        }
+                        if !ig::hands_off_active(&s, ig::now_ms()) && ig::yield_wait(last_user, ig::now_ms()).is_some() {
+                            retry = true;
+                            return Err(ig::WAITING.into());
+                        }
+                        let en = enigo.as_mut().ok_or("input is not available on this computer")?;
                         if !trusted(false) {
                             return Err("this computer has not allowed Valnivo Crew Accessibility (System Settings > Privacy & Security > Accessibility)".into());
                         }
-                        let p = plan(&a, &screens())?;
-                        run(en, &p)
+                        ig.note_inject_start();
+                        let r = run(en, &p);
+                        ig.note_inject_end();
+                        if let Plan::Click { x, y, .. } | Plan::Scroll { x, y, .. } = p {
+                            g.agent_last = Some((x, y));
+                        }
+                        r
                     })();
                     match res {
                         Ok(()) => respond(req, 200, json!({"ok": true}), Some(&o), false),
+                        Err(why) if retry => respond(req, 200, json!({"ok": false, "why": why, "retry": true}), Some(&o), false),
                         Err(why) => respond(req, 200, json!({"ok": false, "why": why}), Some(&o), false),
                     }
                 }
@@ -478,12 +610,38 @@ pub fn serve(port: u16, screens: impl Fn() -> Vec<Display> + Send + 'static, on_
             }
         }
     });
-    true
+    Some(ig)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_corner_is_the_main_displays_top_left_only() {
+        assert!(in_stop_corner(0.0, 0.0) && in_stop_corner(4.0, 4.0));
+        assert!(!in_stop_corner(5.0, 0.0));
+        // a screen left of / above the main one: negative coordinates are not the corner
+        assert!(!in_stop_corner(-1500.0, -300.0));
+        assert!(!in_stop_corner(-1.0, 2.0));
+        assert!(!in_stop_corner(2.0, -1.0));
+        assert!(person_in_corner((1, 1), None));
+        assert!(person_in_corner((1, 1), Some((900.0, 500.0))));
+        assert!(!person_in_corner((-800, -20), None), "agent working on a left/upper screen");
+        assert!(!person_in_corner((3, 3), Some((3.0, 3.0))), "where the agent itself put it");
+    }
+
+    #[test]
+    fn plan_keeps_left_screen_clicks_where_asked() {
+        let ds = vec![
+            Display { x: 0.0, y: 0.0, w: 1440.0, h: 900.0, pw: 2880, ph: 1800, main: true },
+            Display { x: -1920.0, y: -300.0, w: 1920.0, h: 1080.0, pw: 1920, ph: 1080, main: false },
+        ];
+        let a = json!({"kind": "click", "nx": 0.0, "ny": 0.0, "sw": 1920, "sh": 1080});
+        assert_eq!(plan(&a, &ds).unwrap(), Plan::Click { x: -1920.0, y: -300.0, right: false, double: false });
+        let a = json!({"kind": "click", "nx": 0.0, "ny": 0.0, "sw": 2880, "sh": 1800});
+        assert_eq!(plan(&a, &ds).unwrap(), Plan::Click { x: 5.0, y: 5.0, right: false, double: false });
+    }
 
     fn http(port: u16, method: &str, path: &str, origin: &str, body: &str) -> (u16, String, String) {
         use std::io::Write;
@@ -502,8 +660,9 @@ mod tests {
         let port = 47_690;
         let seen = std::sync::Arc::new(Mutex::new(Vec::<Option<CtlState>>::new()));
         let s2 = seen.clone();
-        assert!(serve(port, || vec![Display { x: 0.0, y: 0.0, w: 100.0, h: 100.0, pw: 100, ph: 100, main: true }], move |st| s2.lock().unwrap().push(st)));
-        assert!(!serve(port, Vec::new, |_| {}), "a taken port is left to whoever has it (the separate helper)");
+        let g = serve(port, || vec![Display { x: 0.0, y: 0.0, w: 100.0, h: 100.0, pw: 100, ph: 100, main: true }], move |st| s2.lock().unwrap().push(st), false);
+        assert!(g.is_some());
+        assert!(serve(port, Vec::new, |_| {}, false).is_none(), "a taken port is left to whoever has it (the separate helper)");
         let (c, _, b) = http(port, "GET", "/health", "https://console.valnivo.eu", "");
         assert_eq!(c, 200);
         assert!(b.contains("\"app\":1") && b.contains("\"displays\":1"), "{b}");
@@ -521,8 +680,56 @@ mod tests {
         assert_eq!(http(port, "POST", "/state", "https://console.valnivo.eu", "{\"on\":false}").0, 200);
         let v = seen.lock().unwrap().clone();
         assert_eq!(v.len(), 2);
-        assert_eq!(v[0].as_ref().map(|s| (s.agent.as_str(), s.sw)), Some(("desk supervisor", 100)));
+        assert_eq!(v[0].as_ref().map(|s| (s.agent.as_str(), s.sw, s.hands_off)), Some(("desk supervisor", 100, false)));
         assert!(v[1].is_none());
+    }
+
+    #[test]
+    fn the_service_waits_for_the_person_and_knows_a_triple_esc() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let port = 47_691;
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<Option<CtlState>>::new()));
+        let s2 = seen.clone();
+        let g = serve(port, || vec![Display { x: 0.0, y: 0.0, w: 100.0, h: 100.0, pw: 100, ph: 100, main: true }], move |st| s2.lock().unwrap().push(st), false).unwrap();
+        let c = "https://console.valnivo.eu";
+        // an old page (no handsOff): yield only
+        let (sc, _, sb) = http(port, "POST", "/state", c, "{\"on\":true,\"agent\":\"a\",\"until\":\"2099-01-01T00:00:00Z\"}");
+        assert_eq!(sc, 200);
+        assert!(sb.contains("\"handsOff\":false"), "{sb}");
+        assert!(!g.hands_off.load(SeqCst));
+        // the person moves the mouse: the agent's click waits, with retry
+        g.note_user();
+        let (_, _, ab) = http(port, "POST", "/act", c, "{\"kind\":\"click\",\"nx\":0.5,\"ny\":0.5}");
+        assert!(ab.contains("\"ok\":false") && ab.contains("\"retry\":true") && ab.contains(ig::WAITING), "{ab}");
+        // a bad action is still refused outright (no retry)
+        let (_, _, bb) = http(port, "POST", "/act", c, "{\"kind\":\"launch\"}");
+        assert!(!bb.contains("retry"), "{bb}");
+        // Hands-off asked for: recorded; without hooks (this test) it cannot block, and the page is told so
+        let (_, _, hb) = http(port, "POST", "/state", c, "{\"on\":true,\"agent\":\"a\",\"handsOff\":true}");
+        assert!(hb.contains("\"handsOff\":false"), "no hooks here: {hb}");
+        assert!(!g.hands_off.load(SeqCst), "it falls back to yield");
+        assert_eq!(seen.lock().unwrap().last().cloned().flatten().map(|s| (s.hands_off, s.mode)), Some((true, "yield")));
+        // as if the hooks were up: hands-off blocks; Esc Esc Esc (as the hook reports it): /act refuses, /health says stopped
+        g.hands_off.store(true, SeqCst);
+        g.last_agent.store(ig::now_ms(), SeqCst);
+        assert!(!g.on_event(false, ig::Kind::Down), "the person's click is held back");
+        assert!(http(port, "GET", "/health", c, "").2.contains("\"mode\":\"handsoff\""));
+        let esc = ig::Kind::KeyDown { esc: true, os_escape: false };
+        for _ in 0..3 {
+            g.on_event(false, esc);
+        }
+        assert!(g.stopped.load(SeqCst));
+        let (_, _, sb2) = http(port, "POST", "/act", c, "{\"kind\":\"key\",\"key\":\"return\"}");
+        assert!(sb2.contains(ig::STOPPED_ESC) && !sb2.contains("retry"), "{sb2}");
+        let (_, _, h) = http(port, "GET", "/health", c, "");
+        assert!(h.contains("\"stopped\":true") && h.contains("\"modes\":2"), "{h}");
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(seen.lock().unwrap().last().unwrap().is_none(), "the banner goes when the person stops it");
+        // a new grant forgets the stop
+        http(port, "POST", "/state", c, "{\"on\":true,\"agent\":\"a\"}");
+        assert!(http(port, "GET", "/health", c, "").2.contains("\"stopped\":false"));
+        http(port, "POST", "/state", c, "{\"on\":false}");
+        assert!(!g.on.load(SeqCst) && !g.hands_off.load(SeqCst));
     }
 
     fn d(x: f64, y: f64, w: f64, h: f64, pw: u32, ph: u32, main: bool) -> Display {

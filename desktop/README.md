@@ -22,6 +22,31 @@ separate `desktop-helper` that browser users install. Push the mouse into the **
 - **Windows:** nothing to allow. It cannot click into windows that run as administrator.
 - If the separate helper already runs, the app leaves the port to it.
 
+### Two input modes (from 0.14.0, `src-tauri/src/input_guard.rs`)
+
+- **You move, the agent waits** (always, the default). Any real mouse movement, click or key press of yours pauses the agent
+  until you have left the mouse and keyboard alone for 4 seconds. The agent's own clicks and keys never count (Windows: the
+  "injected" flag of the input hooks; macOS: the app marks its own events). Nothing of yours is ever blocked in this mode. The
+  chat asks again every 2 seconds for up to 15 seconds per action, then tells the agent it is waiting for you.
+- **Hands-off** (opt-in: the checkbox beside Give control, remembered like the duration). While control is on, your own mouse
+  and keyboard are paused so nothing gets in the agent's way; only the agent's input goes through. The red banner says
+  *"Hands-off: your mouse and keyboard are paused. Press Esc 3 times to take back control."* Ways out, always on:
+  1. **Esc 3 times within 1.5 seconds**: hands-off and control end at once; the chat shows "You took back control".
+  2. **A minute without an agent action**: your mouse and keyboard come back on their own (for the rest of that grant) and the
+     banner says so.
+  3. **Control ends** (Take back control, Stop sharing, the end time), **the app quits or crashes**: the hooks belong to the app's
+     process and go with it.
+  4. **The system's own escapes are never touched**: Ctrl+Alt+Del on Windows cannot be hooked at all; Ctrl+Shift+Esc (Windows)
+     and Cmd+Option+Esc (macOS) pass; key releases and Shift/Ctrl (macOS: all modifier keys) always pass, so nothing stays held down.
+
+  Windows uses low-level hooks (`WH_MOUSE_LL` / `WH_KEYBOARD_LL`) on their own thread; macOS uses an event tap, which needs the
+  same Accessibility permission. Without it (or with an older page) hands-off falls back to the default mode, and the chat says
+  so. Trackpad gestures that are not clicks, moves or scrolls (three-finger swipes) are not paused on macOS. The hooks are only
+  installed while control is on.
+
+  The Windows code is type-checked on a Mac with `RUSTFLAGS="--cfg win_check" cargo check`; it is built and run only by the
+  Windows job of the public build.
+
 ## Getting the apps
 
 The apps are built in the **public** repository [valnivo-labs/valnivo-crew-desktop](https://github.com/valnivo-labs/valnivo-crew-desktop),
